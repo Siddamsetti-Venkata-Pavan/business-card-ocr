@@ -1,20 +1,36 @@
-import os
-
-
-import easyocr
 import cv2
 import numpy as np
 import re
+from typing import List, Tuple, Dict
 from difflib import SequenceMatcher
-from typing import List, Dict, Tuple
+from paddleocr import PaddleOCR
+from transformers import TrOCRProcessor, VisionEncoderDecoderModel
+from PIL import Image
+import torch
 
 
 class UltraPreciseOCR:
 
-    def __init__(self, languages=['en'], gpu=False):
-        self.reader = easyocr.Reader(languages, gpu=gpu, verbose=False)
+    def __init__(self, gpu=False):
+        self.detector = PaddleOCR(
+            use_angle_cls=True,
+            lang="en",
+            use_gpu=gpu,
+            show_log=False
+        )
 
-    def preprocess_image(self, image_path: str) -> Tuple[np.ndarray, np.ndarray]:
+        self.processor = TrOCRProcessor.from_pretrained(
+            "microsoft/trocr-base-printed"
+        )
+        self.recognizer = VisionEncoderDecoderModel.from_pretrained(
+            "microsoft/trocr-base-printed"
+        )
+
+        self.device = "cuda" if gpu and torch.cuda.is_available() else "cpu"
+        self.recognizer.to(self.device)
+
+    # ---------------- PREPROCESS ----------------
+    def preprocess_image(self, image_path: str):
         img = cv2.imread(image_path)
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
@@ -24,46 +40,62 @@ class UltraPreciseOCR:
             img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
-        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(3.0, (8, 8))
         enhanced = clahe.apply(gray)
-
         denoised = cv2.fastNlMeansDenoising(enhanced, None, 10, 7, 21)
 
-        kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-        sharpened = cv2.filter2D(denoised, -1, kernel)
+        return img_rgb, denoised
 
-        return img_rgb, sharpened
+    # ---------------- DETECTION ----------------
+    def detect_text(self, image: np.ndarray) -> List:
+        result = self.detector.ocr(image, cls=True)
+        return result[0]
 
+    # ---------------- RECOGNITION ----------------
+    def recognize_crop(self, crop: np.ndarray) -> str:
+        pil = Image.fromarray(crop).convert("RGB")
+        pixel_values = self.processor(pil, return_tensors="pt").pixel_values.to(self.device)
+
+        ids = self.recognizer.generate(pixel_values)
+        return self.processor.batch_decode(ids, skip_special_tokens=True)[0]
+
+    # ---------------- PIPELINE ----------------
     def extract_text(self, image: np.ndarray) -> List[Tuple]:
-        return self.reader.readtext(
-            image,
-            detail=1,
-            paragraph=False,
-            text_threshold=0.7,
-            low_text=0.4,
-            link_threshold=0.4
-        )
+        detections = self.detect_text(image)
+        results = []
 
-    def is_similar(self, a: str, b: str, threshold=0.85) -> bool:
+        for box, _, conf in detections:
+            pts = np.array(box).astype(int)
+            x, y, w, h = cv2.boundingRect(pts)
+            crop = image[y:y+h, x:x+w]
+
+            if crop.size == 0:
+                continue
+
+            text = self.recognize_crop(crop)
+            results.append((box, text.strip(), conf))
+
+        return results
+
+    # ---------------- CLEANING ----------------
+    def is_similar(self, a, b, threshold=0.85):
         return SequenceMatcher(None, a.lower(), b.lower()).ratio() >= threshold
 
-    def remove_duplicates(self, results: List[Tuple]) -> List[Tuple]:
-        unique = []
-        texts = []
+    def remove_duplicates(self, results):
+        unique, texts = [], []
 
-        for bbox, text, conf in sorted(results, key=lambda x: x[2], reverse=True):
-            if not any(self.is_similar(text, t) for t in texts):
-                unique.append((bbox, text.strip(), conf))
-                texts.append(text.strip())
+        for box, text, conf in sorted(results, key=lambda x: x[2], reverse=True):
+            if text and not any(self.is_similar(text, t) for t in texts):
+                unique.append((box, text, conf))
+                texts.append(text)
 
         return unique
 
-    def sort_reading_order(self, results: List[Tuple]) -> List[Tuple]:
-        results = sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))
-        return results
+    def sort_reading_order(self, results):
+        return sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))
 
-    def categorize(self, text_lines: List[str]) -> Dict:
+    # ---------------- CATEGORY ----------------
+    def categorize(self, lines: List[str]) -> Dict:
         categories = {
             "NAME": [],
             "BUSINESS_TYPE": [],
@@ -72,47 +104,20 @@ class UltraPreciseOCR:
             "GST": [],
             "OTHER": []
         }
-    
-        phone_pattern = r'(\+?91[\s\-:]*)?[6-9]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}'
-        gst_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]\b'
-        pincode_pattern = r'\b\d{6}\b'
-    
-        for text in text_lines:
+
+        phone = r'(\+?91[\s\-:]*)?[6-9]\d{9}'
+        gst = r'\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]\b'
+        pin = r'\b\d{6}\b'
+
+        for text in lines:
             t = text.lower()
-            assigned = False
-    
-            # GST
-            if "gst" in t or re.search(gst_pattern, text):
+
+            if re.search(gst, text):
                 categories["GST"].append(text)
-                assigned = True
-    
-            # Mobile / Phone
-            elif re.search(phone_pattern, text):
+            elif re.search(phone, text):
                 categories["MOBILE"].append(text)
-                assigned = True
-    
-            # Business Type
-            elif any(word in t for word in [
-                "wholesaler", "retailer", "dealer",
-                "manufacturer", "supplier", "trader"
-            ]):
-                categories["BUSINESS_TYPE"].append(text)
-                assigned = True
-    
-            # Address keywords
-            elif any(word in t for word in [
-                "building", "floor", "shop", "lane",
-                "road", "street", "block", "area"
-            ]):
+            elif re.search(pin, text):
                 categories["ADDRESS"].append(text)
-                assigned = True
-    
-            # Pincode → Address
-            elif re.search(pincode_pattern, text):
-                categories["ADDRESS"].append(text)
-                assigned = True
-    
-            # Name (short, capitalized, first occurrence)
             elif (
                 not categories["NAME"]
                 and len(text.split()) <= 3
@@ -120,25 +125,22 @@ class UltraPreciseOCR:
                 and text[0].isupper()
             ):
                 categories["NAME"].append(text)
-                assigned = True
-    
-            if not assigned:
+            else:
                 categories["OTHER"].append(text)
-    
-        # Remove empty categories
+
         return {k: v for k, v in categories.items() if v}
 
-
-    def draw_boxes(self, image: np.ndarray, results: List[Tuple]) -> np.ndarray:
+    # ---------------- VISUAL ----------------
+    def draw_boxes(self, image, results):
         img = image.copy()
 
-        for bbox, _, conf in results:
-            pts = np.array(bbox, dtype=np.int32)
+        for box, _, conf in results:
+            pts = np.array(box, dtype=np.int32)
             cv2.polylines(img, [pts], True, (0, 255, 0), 2)
             cv2.putText(
                 img,
                 f"{conf:.2f}",
-                (int(bbox[0][0]), int(bbox[0][1]) - 5),
+                (pts[0][0], pts[0][1] - 5),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.4,
                 (255, 0, 0),
@@ -146,7 +148,7 @@ class UltraPreciseOCR:
             )
         return img
 
-    def organize(self, results: List[Tuple]) -> Dict:
+    def organize(self, results):
         sorted_results = self.sort_reading_order(results)
         lines = [text for _, text, _ in sorted_results]
 
@@ -158,6 +160,3 @@ class UltraPreciseOCR:
             ],
             "categorized": self.categorize(lines)
         }
-
-
-
