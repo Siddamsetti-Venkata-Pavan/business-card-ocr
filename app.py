@@ -7,7 +7,10 @@ import numpy as np
 st.set_page_config(page_title="Business Card OCR", layout="wide")
 st.title("Business Card Text Extraction")
 
-uploaded = st.file_uploader("Upload a business card image", type=["jpg", "png", "jpeg"])
+uploaded = st.file_uploader(
+    "Upload a business card image",
+    type=["jpg", "png", "jpeg"]
+)
 
 if uploaded:
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
