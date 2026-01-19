@@ -63,36 +63,71 @@ class UltraPreciseOCR:
         results = sorted(results, key=lambda x: (x[0][0][1], x[0][0][0]))
         return results
 
-    def categorize(self, lines: List[str]) -> Dict:
+    def categorize(self, text_lines: List[str]) -> Dict:
         categories = {
-            "name": [],
-            "company": [],
-            "phone": [],
-            "email": [],
-            "website": [],
-            "address": [],
-            "other": []
+            "NAME": [],
+            "BUSINESS_TYPE": [],
+            "MOBILE": [],
+            "ADDRESS": [],
+            "GST": [],
+            "OTHER": []
         }
-
-        for text in lines:
+    
+        phone_pattern = r'(\+?91[\s\-:]*)?[6-9]\d{2}[\s\-]?\d{3}[\s\-]?\d{4}'
+        gst_pattern = r'\b\d{2}[A-Z]{5}\d{4}[A-Z][A-Z\d]Z[A-Z\d]\b'
+        pincode_pattern = r'\b\d{6}\b'
+    
+        for text in text_lines:
             t = text.lower()
-
-            if re.search(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.\w+\b', text):
-                categories["email"].append(text)
-            elif re.search(r'(\+91[\s\-]?)?[6-9]\d{9}', text):
-                categories["phone"].append(text)
-            elif "www" in t or t.endswith(".com"):
-                categories["website"].append(text)
-            elif any(word in t for word in ["road", "street", "lane", "floor", "building"]):
-                categories["address"].append(text)
-            elif text.isupper():
-                categories["company"].append(text)
-            elif len(text.split()) <= 3 and text[0].isupper():
-                categories["name"].append(text)
-            else:
-                categories["other"].append(text)
-
+            assigned = False
+    
+            # GST
+            if "gst" in t or re.search(gst_pattern, text):
+                categories["GST"].append(text)
+                assigned = True
+    
+            # Mobile / Phone
+            elif re.search(phone_pattern, text):
+                categories["MOBILE"].append(text)
+                assigned = True
+    
+            # Business Type
+            elif any(word in t for word in [
+                "wholesaler", "retailer", "dealer",
+                "manufacturer", "supplier", "trader"
+            ]):
+                categories["BUSINESS_TYPE"].append(text)
+                assigned = True
+    
+            # Address keywords
+            elif any(word in t for word in [
+                "building", "floor", "shop", "lane",
+                "road", "street", "block", "area"
+            ]):
+                categories["ADDRESS"].append(text)
+                assigned = True
+    
+            # Pincode → Address
+            elif re.search(pincode_pattern, text):
+                categories["ADDRESS"].append(text)
+                assigned = True
+    
+            # Name (short, capitalized, first occurrence)
+            elif (
+                not categories["NAME"]
+                and len(text.split()) <= 3
+                and text.replace(" ", "").isalpha()
+                and text[0].isupper()
+            ):
+                categories["NAME"].append(text)
+                assigned = True
+    
+            if not assigned:
+                categories["OTHER"].append(text)
+    
+        # Remove empty categories
         return {k: v for k, v in categories.items() if v}
+
 
     def draw_boxes(self, image: np.ndarray, results: List[Tuple]) -> np.ndarray:
         img = image.copy()
@@ -123,5 +158,6 @@ class UltraPreciseOCR:
             ],
             "categorized": self.categorize(lines)
         }
+
 
 
