@@ -1,14 +1,13 @@
 import streamlit as st
 import tempfile
 from ocr_engine import UltraPreciseOCR
+from PIL import Image
+import numpy as np
 
 st.set_page_config(page_title="Business Card OCR", layout="wide")
 st.title("Business Card Text Extraction")
 
-uploaded = st.file_uploader(
-    "Upload a business card image",
-    type=["jpg", "jpeg", "png"]
-)
+uploaded = st.file_uploader("Upload a business card image", type=["jpg", "png", "jpeg"])
 
 if uploaded:
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
@@ -21,7 +20,7 @@ if uploaded:
     results = ocr.extract_text(processed)
     unique = ocr.remove_duplicates(results)
     organized = ocr.organize(unique)
-    detected = ocr.draw_boxes(original, unique)
+    detected_img = ocr.draw_boxes(original, unique)
 
     col1, col2 = st.columns(2)
 
@@ -30,26 +29,14 @@ if uploaded:
         st.image(original, use_column_width=True)
 
     with col2:
-        st.subheader("Detected Image")
-        st.image(detected, use_column_width=True)
+        st.subheader("Detected Text Regions")
+        st.image(detected_img, use_column_width=True)
 
     st.subheader("Extracted Text")
     st.text(organized["exact_text"])
 
     st.subheader("Text with Confidence")
-    st.table(organized["lines_with_confidence"])
+    st.json(organized["lines_with_confidence"])
 
     st.subheader("Categorized Information")
-
-    category_table = []
-    for category, values in organized["categorized"].items():
-        for value in values:
-            category_table.append({
-                "Category": category,
-                "Value": value
-            })
-
-    st.table(category_table)
-
-else:
-    st.info("Upload a business card image to start extraction")
+    st.json(organized["categorized"])
