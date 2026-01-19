@@ -1,5 +1,4 @@
 import os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
 
 import easyocr
@@ -124,4 +123,5 @@ class UltraPreciseOCR:
             ],
             "categorized": self.categorize(lines)
         }
+
 
