@@ -1,8 +1,10 @@
-easyocr
+paddleocr
+paddlepaddle
+transformers
+torch
+torchvision
 opencv-python-headless
 numpy
 pillow
-torch
-torchvision
 streamlit
 pandas
