@@ -1,3 +1,7 @@
+import os
+os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+
 import easyocr
 import cv2
 import numpy as np
@@ -120,3 +124,4 @@ class UltraPreciseOCR:
             ],
             "categorized": self.categorize(lines)
         }
+
